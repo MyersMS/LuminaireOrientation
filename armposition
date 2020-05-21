@@ -1,0 +1,279 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Code assumes:
+#            1)   Street lights that have a mount type
+#            2)   Arm length in Meters
+#            3)   There's a Unique ID for both Street lights and centerlines
+#            4)   Street lights must be where there is a centerline
+#            5)   Street lights and centerlines must be in the same projected coordinate system
+
+import arcpy
+arcpy.env.overwriteOutput = True
+arcpy.env.workspace = 'F:/Luminaires'
+lum = 'F:/StreetLights.shp'
+cent = 'F:/Centerlines.shp'
+
+# Step 1: Calculate the distance between the street light and the centerline
+
+def near_analysis(streetlight, centerline):
+
+        DescStreetlight = arcpy.Describe(streetlight)
+        DescCenterline = arcpy.Describe(centerline)
+
+        if DescStreetlight.shapeType != "Point" and DescCenterline.shapeType != "Polyline":
+            print "The street light shapefile is a {0}.".format(DescStreetlight.shapeType)
+            print "The centerline shapefile is a {0}.".format(DescCenterline.shapeType)
+            print "Incorrect data type for either street light or centerline."
+            print "Street light must be a point and centerline must be a polyline before near tool can be used."
+        else:
+            arcpy.Near_analysis(lum, cent)
+
+            print "Step 1: Distance between Luminaires and centerlines have been calculated."
+            print
+
+near_analysis(lum, cent)
+
+# Step 2: Add a column called Dist_3, which is the distance calculated in step 1 plus 3
+
+arcpy.AddField_management(lum, "Dist_3", "Integer", "", "", 3)
+
+print "Step 2: Column Dist_3 has been created."
+print
+
+cursor = arcpy.da.UpdateCursor(lum, ["Dist_3", "Near_Dist"])
+for row in cursor:
+    row[0] = row[1] + 3
+    cursor.updateRow(row)
+
+print "'Dist_3' column has been created by adding the values in Near_Dist and 3."
+print
+
+del row
+del cursor
+
+# Step 3: Join the centerlines to the street lights using the NEAR_FID and FID column respectively
+
+arcpy.JoinField_management(lum, "Near_FID", cent, "FID")
+
+print "Step 3: Street lights have the FID of the centerlines they are closest to."
+print
+
+# Step 4: Create column called difference and subtract the arm length from the Near Dist
+
+arcpy.AddField_management(lum, "Difference", "Integer", "", "", 3)
+
+print "Step 4: Column 'Difference' has been created."
+print
+
+cursor = arcpy.da.UpdateCursor(lum, ["Difference", "Arm", "Near_Dist"])
+for row in cursor:
+    row[0] = row[1] - row[2]
+    cursor.updateRow(row)
+
+print "Step 4: 'Difference' column has been updated by subtracting "
+print "the Arm length from the Distance to the centerline."
+print
+
+del row
+del cursor
+
+# Step 5: Create column called ArmHub and update the rows to show where the arm length is less than the near Dist
+
+arcpy.AddField_management(lum, "ArmHub", "String", "", "", 3)
+
+print "Step 4: Column 'ArmHub' has been created."
+print
+
+cursor = arcpy.da.UpdateCursor(lum, ["Difference", "ArmHub"])
+for row in cursor:
+    if row[0] <= 0:
+        row[1] = "YES"
+    else:
+        row[1] = "No"
+
+    cursor.updateRow(row)
+
+print "Step 5: 'ArmHub' column has been updated where 'Difference' <= 0, row = 'Yes' "
+print "the Arm length from the Distance to the centerline."
+print
+
+del row
+del cursor
+
+# Step 6: Create variable distance buffer using 'Dist_3' column
+
+arcpy.Buffer_analysis(lum, "Hub_Dist_Buff", "Dist_3")
+arcpy.PolygonToLine_management("Hub_Dist_Buff.shp", "Hub_Dist_BuffL.shp")
+
+print "Step 6: 'Hub_Dist_Buff' shapefile has been created and converted from Polygon to Line"
+print
+
+# Step 7: Create variable distance buffer using 'Arm' column
+
+arcpy.Buffer_analysis(lum, "Arm_Length_Buff", "Arm")
+arcpy.PolygonToLine_management("Arm_Length_Buff.shp", "Arm_Length_BuffL.shp")
+
+print "Step 7: 'Arm_Length_Buff' shapefile has been created and converted from Polygon to Line"
+print
+
+#Step 8: Create line intersections from the centerlines and 'Hub_Dist_BuffL'
+
+arcpy.Intersect_analysis((cent,"Hub_Dist_BuffL.shp"), "Line_Int.shp", "", "", "POINT" )
+
+print "Step 8: 'Line_Int' shapefile has been created"
+print
+
+# Step 9: Create mean center shapefile from the 'Line_Int'
+
+arcpy.MeanCenter_stats('Line_Int.shp', 'Mean_Center.shp', "", "Right_FID")
+
+print "Step 9: 'Mean_Center' shapefile has been created"
+print
+
+## Step 10: Calculate the distance to hub
+
+print "************"
+print "Step 10: THIS IS WHERE THE SHP 'Hub_Distance' SHOULD BE CALCULATED."
+print "************"
+print
+
+## Step 11: Calculate the orientation
+
+arcpy.AddField_management(lum, "Orient", "Integer", "", "", 3)
+
+print "Step 11: Column 'Orient' has been created."
+print
+
+inTable = lum
+fieldName = "Orient"
+expression = ""
+codeblock =
+
+'''case
+
+when yat(-1)-yat(0) < 0 or yat(-1)-yat(0) > 0 then
+(atan((xat(-1)-xat(0))/(yat(-1)-yat(0)))) * 180/3.14159 + (180 *(((yat(-1)-yat(0)) < 0) +
+(((xat(-1)-xat(0)) < 0 AND (yat(-1) - yat(0)) >0)*2)))
+when ((yat(-1)-yat(0)) = 0 and (xat(-1) - xat(0)) >0) then 90
+when ((yat(-1)-yat(0)) = 0 and (xat(-1) - xat(0)) <0) then 270
+
+end'''
+
+arcpy.CalculateField_management(inTable, fieldName, "", "", codeblock)
+
+print "Step 11: Orientation has been calculated in the 'Orient' field"
+print
+
+## Step 12: Identify duplicate ID's, give counts
+
+#A#	First, the duplicate streetlights and line intersections need to be identified,
+# counted and given IDs. For the streetlights, it is important to know if there are
+# duplicates because having 2 streetlights on an expressway means that the orientations
+# must be opposite each other. For the line intersections, if there are more than 2
+# line intersections for a streetlight, the arm position might not be correct because the
+# mean coordinates can be anywhere instead of perpendicular to the centerline and streetlight.
+
+#B#	Export the streetlights.shp and Line_Intersections.shp from arcgis as a CSV and name
+# them streetlights.csv and Line_intersections.csv respectively. For both, keep only the
+# Old_ID and Unique_ID columns.
+
+#C#	Import both to MySQL and use the following formula to count the number of duplicates.
+
+# For the streetlights:
+# SELECT ` Unique_ID `, Old_ID, COUNT(Old_ID) AS Dup_Count
+# FROM *Table Name*
+# GROUP BY Old_ID
+# HAVING Duplicate_Counts > 1
+# ORDER BY Duplicate_Counts DESC
+
+# For the line Intersections:
+# SELECT Old_ID, Count (Old_ID) AS Dup_Int
+# FROM *Table name*
+# Group by Old_ID
+# HAVING Duplicate_Line_Intersections > 2
+# ORDER BY Duplicate_Line_Intersections DESC
+#This counts the number of duplicates for each streetlight that is greater than one for
+# the streetlights and two for the line intersections. Save both as CVS and name them
+# uplicate_Streetlights.csv and Duplicate_Line_Intersersection.csv.
+
+#D#	Dup_Count and Dup_Int columns mean the counts of the duplicates for the
+# streetlights and the line intersections respectively.
+
+#E#	Import the Streetlights.csv to SQL Server and Rank Old_IDs. Use the
+# ROW_NUMBER() function in SQL Server to rank the table rows according the
+# duplicate column values for each row, but the rows with the same Old_ID where dealt
+# with as one partition. This provides IDs for the duplicates useful when switching
+# the orientation to the opposite direction
+
+#F#	Use the formula:
+# SELECT Unique_ID, Old_ID,
+# ROW_NUMBER() OVER (partition by Old_ID ORDER BY Old_ID) as DUP_ID
+# FROM *Table Name*
+#This creates a column called Dup_ID which is the Unique_ID based off rank for the
+# duplicates. Save as Streetlight_Ranks.csv.
+
+#G#	Import the Duplicates_Line_Intersections.csv, Duplicates_Streetlights.csv and
+# Streetlight_Ranks.csv to arcgis.
+
+#H#	For the streetlight.shp, join the Duplicates_Streetlights.csv and
+# Streetlight_Ranks.csv and copy the Dup_Count and Dup_ID columns. For the
+# Line_Intersections.shp, join the Duplicates_Line_Intersections.csv and copy the Dup_Int column.
+
+#I#	Create a Unique ID called LI_UID (Line Intersection Unique ID) by combining the
+# Street_Name, ‘_’ (space), and Old_ID columns.
+
+#J#	From the Line_Intersections.shp, use query builder to find where Dup_Int >= 2
+# and save the layer as a separate shapefile called Line_Intersections_2.shp
+
+#K#	Dissolve the Line_Intersections_2.shp, with the dissolve fields as the Old_ID and
+# Street_Name. Save as Dissolved_Line_Intersections_2.shp.
+
+#L#	Save the Dissolved_Line_Intersections_2.shp as Dissolved_Line_Intersections_2.csv and import
+# into SQL Server. Assign ranks using the formula:
+
+# SELECT Old_ID, Unique_ID, Street_Name, OSMCLASS, Dup_Int, LI_UID,
+# ROW_NUMBER() OVER (partition by Old_ID ORDER BY Old_ID) as Dissolved_Ranks
+# FROM *Table Name*
+# ORDER BY Old_ID
+
+#M#	Save the results as Ranked_Dissolved_Line_Intersections_2.csv and Join the
+# Ranked_Dissolved_Line_Intersections_2.csv to the Line_Intersections.shp.
+
+#N#	Copy the Dissolved_Ranks column to the Line_Intersections.shp and query and delete
+# where Dup_Int > 2 and Dissolved_Ranks > 1.
+
+#O#	Using the Line_Intersections.shp, calculate again, the mean coordinates and Distance to
+# Nearest Hub (See Section I steps 7 & 9) and save them with the same names but add “_2” at the end.
+# Calculate the new orientation with a new column called Orientation.
+
+#P#	Join the Line_To_Hub_2.shp and the Duplicate_Line_Intersections.csv to the Streetlights.shp and
+# copy the Orientation and Dup_Int columns respectively. Next step is to find the orientations for
+# the Dup_Count = 2 where OSMCLASS = expressway.
+
+#Q	Create the following groups, based off Section I, 10a, b & c from the previous section and SQL codes:
+
+#	Where the Arm>Hub = ‘NO’ and Dup_Count = 2 and OSMCLASS = ‘EXPRESSWAY’
+#	Where the Arm>Hub = ‘YES’ and Dup_Count = 2 and OSMCLASS = ‘EXPRESSWAY’
+#	Where the Arm>Hub = ‘NO’ and Dup_Count = 2 and OSMCLASS = ‘EXPRESSWAY’ and Dup_Int > 2
+
+#R#	Filter for one group of the duplicate IDs. Example: Dup_ID = ‘1’. For these, use the following formula
+# (Orientation + 180) % 360, in the orientation column to calculate for the opposite orientation of
+# one of the assets that have two assets with the same Old_ID and location along the expressway.
+
+#S# Calculating the streetlight location, correct arm position and orientation:
+
+    #a# Change the streetlight layer 's projection to UTM and add the geometry attributes
+
+    #b# Export as a CSV and have the following columns available for calculations
+            # Unique_ID
+            # Arm Length( in meters)
+            # Orientation
+            # Easting or X coordinate( in UTM)
+            # Northing or Y coordinate( in UTM)
+            # Departure for X is equals to Arm Length * SIN (RADIANS(Orientation))
+            # Latitude for Y is equals to Arm Length * COS (RADIANS(Orientation))
+            # X coordinates for arm length is equals to Easting + Departure
+            # Y coordinates for arm length is equals to Northing + Latitude
+
+#T# Import to arcmap using the UTM coordinate, save as Arm_Position.shp
